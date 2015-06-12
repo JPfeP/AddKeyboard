@@ -29,6 +29,12 @@
 #attention quand on débranche la clavier et rebranche, pas retrouvé apres , changement d'ID sournois ?
 #Gerer le fait que les fichiers de conf soient manquants = plein d'erreur a cause de REFRESH
 #la sauvegarde automatique fait encore chier à fair des fichiers de 22megas
+#c quoi ce bordel il y a un handler donc plus besoin du modal timer ?
+
+# 1 window_manager = top level, apparement toujours WinMan
+# X windows = les fenetres, en general il y en a qu'une a moins qu'on en detache une de la principale
+# 1 screen = un groupes d'espaces d'une window, Default ou UV/Image par exemple en haut de Info
+# X areas = les zones d'un screen
 
 #bpy.context.area.type = 'INFO' 
 
@@ -40,11 +46,14 @@
 #bpy.ops.info.reports_display_update()
 #print (len(a.split("\n")))
 
+#addkeyboard_prefs
+#0=device
+#1=auto run 
 
 bl_info = {
     "name": "AddKeyboard",
     "author": "J.P.P",
-    "version": (0, 3),
+    "version": (0, 4),
     "blender": (2, 6, 4),
     "location": "",
     "description": "Associate the keys of a dedicated keyboard to the blender functions of your choice",
@@ -68,12 +77,33 @@ dedikb_prefs=[]
 device=''
 last_event=0
 
-#bpy.context.area.type = 'TEXT_EDITOR'
-#bpy.ops.text.run_script()
+op_run= 0
 
 from asyncore import file_dispatcher, loop
 from evdev import InputDevice, categorize, ecodes
- 
+from bpy.types import Operator, AddonPreferences
+from bpy.props import StringProperty, IntProperty, BoolProperty 
+
+class ExampleAddonPreferences(AddonPreferences):
+    # this must match the addon name, use '__package__'
+    # when defining this in a submodule of a python package.
+    bl_idname = __name__
+
+    device = StringProperty(
+            name="Example File Path",
+            )
+    autorun = BoolProperty(
+            name="Auto Run",
+            default=False,
+            )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Settings")
+        layout.prop(self, "device")
+        layout.prop(self, "autorun")
+        #layout.prop(bpy.context.scene , 'input_dev')
+
 
 class InputDeviceDispatcher(file_dispatcher):
      def __init__(self, device):
@@ -93,18 +123,25 @@ class KB_UIPanel(bpy.types.Panel):
     bl_space_type = "VIEW_3D"
     bl_region_type = "TOOLS"
     bl_category = "AddKeyboard"
-     
-    bpy.types.Scene.on_off = bpy.props.BoolProperty()
- 
-    def draw(self, context):                         
-        self.layout.operator("addkeyboard.modal_timer_operator", text='Start')
-        self.layout.prop(bpy.context.scene, 'on_off', text='Auto run')
-        self.layout.prop(bpy.context.scene , 'input_dev')
-        self.layout.operator("addkeyboard.keypopup" , text='Key editor')
-            
+    bl_idname = "addkeyboard.panel"
+    
+           
+    def draw(self, context):
+        layout = self.layout
+        layout.operator("addkeyboard.modal_timer_operator", text='Start')
+        layout.prop(bpy.context.scene , 'input_dev')
+        layout.operator("addkeyboard.keypopup" , text='Key editor')
+        layout.separator()
+        layout.operator("addkeyboard.keys_list_editor" , text='Keys List editor')
+        layout.operator("addkeyboard.actualize" , text='Reload and Refresh')
+        #layout(self,self)
+
+
+    
+                    
 def refresh_list(description="-1"):
         b=[]
-        b.append(("REFRESH","----------REFRESH LIST----------",""))
+        b.append(("Voi","---Please Select---",""))
         devices = map(InputDevice, list_devices())
         for i in devices:
             a = (i.fn,i.name,i.phys)
@@ -114,22 +151,30 @@ def refresh_list(description="-1"):
         return b
     
 def readlists():
-    print("AddKeyboard: Reading config files")
+    print("AddKeyboard: Reading Keys List file")
     path = bpy.utils.resource_path('USER')+"/config/"
     
-    global dedikb_list, dedikb_prefs
+    global dedikb_list
     
     #for the list of keys
     try:
         file = open(path+'addkeyboard_list.cfg','r')
+        dedikb_list.append('') # There no key 0 so need to make an offset 
         for line in file.readlines():
             dedikb_list.append(line[:-1]) #to remove the RETURN caracter
         file.close()
+    
     except:
         print ("AddKeyboard: no list file found")
         dedikb_list= [""] * 150
-    
+
+
+def readprefs():    
     #for the addon prefs
+    global dedikb_prefs
+    print("AddKeyboard: Reading config files")
+    path = bpy.utils.resource_path('USER')+"/config/"
+    
     try: 
         file = open(path+'addkeyboard_prefs.cfg','r')
         for line in file.readlines():
@@ -137,22 +182,25 @@ def readlists():
         file.close()
         #restoring the users prefs
         bpy.context.scene.input_dev = refresh_list(dedikb_prefs[0])
+    
     except:
         print ("AddKeyboard: no config file found")
         dedikb_prefs=[""] * 5
-   
+ 
     
 def writelists():
-    print("AddKeyboard: Saving")
-    path = bpy.utils.resource_path('USER')+"/config/"
-        
     #for the list of keys
+    print("AddKeyboard: Saving Keys List")
+    path = bpy.utils.resource_path('USER')+"/config/"
     file = open(path+'addkeyboard_list.cfg','w')                       
-    for eachitem in dedikb_list:
+    for eachitem in dedikb_list[1:]:   #we don't need key 0
         file.write(eachitem+"\n")        
     file.close()
-    
+
+def writeprefs():    
     #for the addon prefs
+    path = bpy.utils.resource_path('USER')+"/config/"
+    print("AddKeyboard: Saving Preferences")
     file = open(path+'addkeyboard_prefs.cfg','w')                       
     for eachitem in dedikb_prefs:
         file.write(eachitem+"\n")        
@@ -164,20 +212,47 @@ class SelectDevice(bpy.types.Operator):
     
     dev_list_enum = []
     dev_list_enum.extend(refresh_list())
-     
+
+    
     global device      
-            
+    #device = bpy.types.Scene.input_dev
+    #dedikb_prefs[0] = bpy.types.Scene.bl_rna.properties['input_dev'].enum_items[bpy.context.scene.input_dev].description
+    
     def upd(self, context): 
         if bpy.context.scene.input_dev == "REFRESH":
             dev_list_enum = refresh_list()
         else:
             device = bpy.types.Scene.input_dev
             dedikb_prefs[0] = bpy.types.Scene.bl_rna.properties['input_dev'].enum_items[bpy.context.scene.input_dev].description
-            writelists()
+            writeprefs()
             #device.grab()    
-
-    bpy.types.Scene.input_dev = bpy.props.EnumProperty(name = "input devices", items = dev_list_enum, update=upd) 
+     
+    bpy.types.Scene.input_dev = bpy.props.EnumProperty(name = "input devices", items = dev_list_enum, update=upd)
     
+     
+    
+class ListEditor(bpy.types.Operator):  
+    bl_label = "Open the config list in the text editor"
+    bl_idname = "addkeyboard.keys_list_editor"
+    
+    def execute(self, context):
+        bpy.context.area.type = 'TEXT_EDITOR'
+        file=bpy.utils.resource_path('USER')+"/config/"+'addkeyboard_list.cfg'
+        for text in bpy.data.texts:
+            if text.name == 'addkeyboard_list.cfg':
+                return {'FINISHED'}
+        bpy.ops.text.open(filepath=file)
+        bpy.context.space_data.show_line_numbers = True
+        return {'FINISHED'}
+    
+class RefreshList(bpy.types.Operator):  
+    bl_label = "Open the config list in the text editor"
+    bl_idname = "addkeyboard.actualize"
+    
+    def execute(self, context):
+        readlists()
+        return {'FINISHED'}
+
 
 
 class DedicatedKB(bpy.types.Operator):
@@ -186,9 +261,11 @@ class DedicatedKB(bpy.types.Operator):
     bl_label = "DedicatedKB"    
    
     _timer = None
+    
           
     def modal(self, context, event):
-        global last_event 
+        global last_event
+        
         if event.type == 'ESC':
             return self.cancel(context)        
         if event.type == 'TIMER':    
@@ -198,9 +275,17 @@ class DedicatedKB(bpy.types.Operator):
                 if str(ev) == "None" : break
                 elif ev.type == 1 and ev.value == 1:
                     print(ev.code)
-                     
-                    exec(dedikb_list[ev.code])
-                    last_event=ev.code                  
+                    try:
+                        last_event = ev.code
+                        tab_exec = dedikb_list[ev.code].split(".")
+                        print (context.space_data)
+                        if tab_exec[2] == 'screen':
+                            print('screen')
+                        #override = {'window': window, 'screen': screen, 'area': area}
+                        exec(dedikb_list[ev.code])
+                        
+                    except:
+                        print ("Oops")
         return {'PASS_THROUGH'}            
           
     def execute(self, context):
@@ -213,6 +298,8 @@ class DedicatedKB(bpy.types.Operator):
         context.window_manager.modal_handler_add(self)
         self._timer = context.window_manager.event_timer_add(.1, context.window)
         print('reading events')
+        global op_run
+        op_run = 1
         return {'RUNNING_MODAL'}        
 
     def cancel(self, context):
@@ -238,8 +325,8 @@ class DialogOperator(bpy.types.Operator):
  
     def invoke(self, context, event):
         global last_event
-                
-        self.command = dedikb_list[self.value] 
+   
+        self.command = dedikb_list[last_event] 
         self.value = last_event 
          
         return context.window_manager.invoke_props_dialog(self, width=1000, height=200)
@@ -294,7 +381,11 @@ class InitMyPropOperator(bpy.types.Operator):
 @persistent
 def my_handler2(scene):
     readlists()
-    bpy.ops.addkeyboard.modal_timer_operator()
+    readprefs()
+    user_preferences = bpy.context.user_preferences
+    autorun = user_preferences.addons['AddKeyboard'].preferences.autorun
+    if autorun == True:
+        bpy.ops.addkeyboard.modal_timer_operator()
     bpy.app.handlers.frame_change_post.remove(my_handler2)
  
 @persistent
